@@ -1,1 +1,197 @@
+import time
+import os
+from PIL import Image, ImageFilter
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+import pytesseract
 
+# 设置 Tesseract 路径（根据实际路径修改）
+pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+
+
+def download_captcha(driver, img_element, save_path='captcha.png'):
+    """验证码截图"""
+    try:
+        img_element.screenshot(save_path)
+        return save_path
+    except Exception as e:
+        print(f"验证码截图失败: {e}")
+        return None
+
+
+def preprocess_image(image_path, threshold=130):
+    """图像预处理"""
+    try:
+        image = Image.open(image_path).convert('L')
+        # 二值化处理
+        image = image.point(lambda x: 255 if x > threshold else 0)
+        # 中值滤波去除噪声
+        image = image.filter(ImageFilter.MedianFilter(size=3))
+        # 高斯模糊平滑图像
+        image = image.filter(ImageFilter.GaussianBlur(radius=0.5))
+        return image
+    except Exception as e:
+        print(f"图片预处理失败: {e}")
+        return None
+
+
+def recognize_captcha(image):
+    """OCR 识别核心"""
+    try:
+        # 配置识别参数，只识别字母和数字
+        text = pytesseract.image_to_string(
+            image,
+            config='--psm 7 --oem 3 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+        )
+        # 去除首尾空白字符
+        return text.strip()
+    except Exception as e:
+        print(f"OCR 识别失败: {e}")
+        return None
+
+
+def save_captcha_result(text, filename='captcha_result.txt'):
+    """保存验证码结果到文本文件"""
+    try:
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.write(text)
+        print(f"验证码已保存至 {os.path.abspath(filename)}")
+        return True
+    except Exception as e:
+        print(f"保存失败: {e}")
+        return False
+
+
+def auto_captcha(driver, url, captcha_xpath, username, password, username_xpath, password_xpath, captcha_input_xpath):
+    """自动化验证码识别流程"""
+    result = {
+        "status": "failure",
+        "captcha_text": "",
+        "error": ""
+    }
+
+    try:
+        driver.get(url)
+        # 等待页面加载完成
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.XPATH, username_xpath))
+        )
+
+        # 输入账号和密码
+        try:
+            username_element = driver.find_element(By.XPATH, username_xpath)
+            password_element = driver.find_element(By.XPATH, password_xpath)
+            username_element.send_keys(username)
+            password_element.send_keys(password)
+        except Exception as e:
+            result["error"] = f"输入账号密码失败: {str(e)}"
+            return result
+
+        # 查找验证码元素
+        try:
+            captcha_element = WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.XPATH, captcha_xpath))
+            )
+        except Exception as e:
+            result["error"] = f"未找到验证码元素: {str(e)}"
+            return result
+
+        # 下载并处理验证码
+        captcha_path = download_captcha(driver, captcha_element)
+        if not captcha_path:
+            result["error"] = "验证码下载失败"
+            return result
+
+        processed_image = preprocess_image(captcha_path)
+        if not processed_image:
+            result["error"] = "验证码预处理失败"
+            return result
+
+        # 识别验证码
+        captcha_text = recognize_captcha(processed_image)
+        if not captcha_text or len(captcha_text) < 4:
+            result["error"] = f"识别结果不可信: {captcha_text}"
+            return result
+
+        # 保存结果
+        if save_captcha_result(captcha_text):
+            result["status"] = "success"
+            result["captcha_text"] = captcha_text
+        else:
+            result["error"] = "结果保存失败"
+
+        # 若识别成功，将验证码写入对应的文本框
+        if result["status"] == "success":
+            try:
+                captcha_input = WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located((By.XPATH, captcha_input_xpath))
+                )
+                captcha_input.send_keys(captcha_text)
+            except Exception as e:
+                result["error"] = f"写入验证码到文本框失败: {str(e)}"
+                result["status"] = "failure"
+
+    except Exception as e:
+        result["error"] = f"流程异常: {str(e)}"
+
+    return result
+
+
+if __name__ == "__main__":
+    # 配置信息
+
+    TARGET_URL = "https://haoka.lot-ml.com/login.html"
+    CAPTCHA_XPATH = '/html/body/div[1]/div/div[1]/form/div[4]/a/img'
+    USERNAME = "15333816750"
+    PASSWORD = "123Q456!"
+    USERNAME_XPATH = '/html/body/div[1]/div/div[1]/form/div[2]/input'
+    PASSWORD_XPATH = '/html/body/div[1]/div/div[1]/form/div[3]/input'
+    CAPTCHA_INPUT_XPATH = '/html/body/div[1]/div/div[1]/form/div[4]/input'
+
+    max_attempts = 10  # 最大尝试次数
+    attempt = 0
+
+    # 创建浏览器实例
+    driver = webdriver.Chrome()
+    try:
+        while attempt < max_attempts:
+            print(f"\n尝试第 {attempt + 1} 次识别...")
+            start_time = time.time()
+            captcha_result = auto_captcha(
+                driver,
+                TARGET_URL,
+                CAPTCHA_XPATH,
+                USERNAME,
+                PASSWORD,
+                USERNAME_XPATH,
+                PASSWORD_XPATH,
+                CAPTCHA_INPUT_XPATH
+            )
+
+            # 打印结果
+            print("=== 执行结果 ===")
+            print(f"状态: {captcha_result['status']}")
+            print(f"识别结果: {captcha_result['captcha_text']}")
+            print(f"耗时: {time.time() - start_time:.2f}秒")
+
+            if captcha_result['error']:
+                print(f"错误信息: {captcha_result['error']}")
+
+            if captcha_result['status'] == 'success':
+                print("识别成功，结果已保存并写入文本框！")
+                # 保持浏览器打开，等待用户手动关闭
+                input("按回车键关闭浏览器...")
+                break
+
+            attempt += 1
+            if attempt < max_attempts:
+                time.sleep(2)  # 间隔2秒
+
+        if attempt == max_attempts:
+            print("\n所有尝试均失败，识别终止。")
+
+    finally:
+        # 确保浏览器资源释放
+        driver.quit()
